@@ -1,0 +1,7 @@
+# Dependencies are declared in pyproject.toml.
+# Install JAX separately for your accelerator, then install the public TAM extras:
+#
+#   pip install -U "jax[cuda12]"
+#   pip install -e ".[train,deploy]"
+
+-e .[train,deploy]

@@ -1,0 +1,50 @@
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+.codex/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Packaging/build
+build/
+dist/
+deploy/sim_adaptor
+*.bin
+
+# Local TAM data, checkpoints, and logs
+datasets/
+dataset/
+checkpoints/
+eval_logs/
+logs/
+outputs/
+artifacts/
+wandb/
+tmp/
+
+# Runtime caches
+.cache/
+jax_cache/
+
+# Generated analysis/media
+*.mp4
+*.mov
+*.avi
+*.npz
+MUJOCO_LOG.TXT
+assets/**/generated/
+assets/**/*_preview.mp4

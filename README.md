@@ -1,0 +1,150 @@
+# Torque Adaptation Module (TAM)
+
+TAM is a sim-to-real dynamics adaptation toolkit for robot manipulators. It
+learns a history-conditioned torque correction module from simulated rollouts
+and applies the learned correction during controller-side deployment or
+evaluation.
+
+## Workflows
+
+1. Generate TAM data for multiple robots.
+2. Train one TAM model across multiple robots.
+3. Train or finetune TAM for one robot.
+4. Run the mapping server and deployment-side evaluation wrapper.
+5. Run the representative simulated source-to-OSC evaluation.
+
+## Install
+
+The default setup targets Linux with MuJoCo/MJX and JAX. Training uses JAX for
+GPU compute and uses PyTorch only for CPU-side dataset loading, so install the
+CPU PyTorch wheel before installing the repo.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install --index-url https://download.pytorch.org/whl/cpu torch
+pip install -U "jax[cuda12]"
+pip install -e ".[train,deploy]"
+```
+
+For CPU-only smoke tests, install CPU PyTorch the same way, then use
+`pip install -e ".[cpu,train,deploy,dev]"`.
+Set `WANDB_API_KEY` only when training with `--wandb-mode online`.
+
+## Robot Presets
+
+| Key | Robot |
+| --- | --- |
+| `panda_pandagripper` | Franka Panda with Panda gripper |
+| `piper_description` | AgileX Piper |
+| `rby1_onearm` | RBY-1 one-arm |
+| `iiwa14` | KUKA iiwa14 |
+| `google_robot` | Google Robot arm |
+| `unitree_z1` | Unitree Z1 |
+| `flexiv_rizon4` | Flexiv Rizon4 |
+
+Short aliases such as `panda`, `piper`, `rby1`, `iiwa14`, `unitree`, and
+`flexiv` are accepted by the TAM entrypoints.
+
+## Generate Data
+
+```bash
+tam-generate-data \
+  --robots panda_pandagripper piper_description rby1_onearm \
+  --dataset-base-path datasets/tam \
+  --num-steps 4000 \
+  --history-batch 128
+```
+
+This writes one dataset subdirectory per robot. Each subdirectory contains Zarr
+rollout shards plus `manifest.json` and `data_generation_config.json`.
+
+## Train Multi-Robot TAM
+
+```bash
+tam-train-multi-robot \
+  --dataset-base-path datasets/tam \
+  --robots panda_pandagripper piper_description rby1_onearm \
+  --run-name tam_multi_demo \
+  --ckpt-workdir checkpoints/tam \
+  --wandb-mode disabled \
+  --max-steps 200000
+```
+
+Checkpoints are written to `checkpoints/tam/<run-name>/`.
+
+## Train One Robot
+
+```bash
+tam-train-robot \
+  --robot rby1_onearm \
+  --dataset-base-path datasets/tam \
+  --run-name tam_rby1 \
+  --ckpt-workdir checkpoints/tam \
+  --wandb-mode disabled \
+  --max-steps 200000
+```
+
+To continue the same run, reuse `--run-name` and `--ckpt-workdir`; the trainer
+restores the latest checkpoint in that run directory when one exists.
+
+## Mapping Server And Evaluation Wrapper
+
+See [docs/deployment.md](docs/deployment.md) for endpoint roles and deployment
+connection details.
+
+```bash
+tam-mapping-server \
+  --ckpt-path checkpoints/tam/tam_rby1 \
+  --xml assets/rby1a/rby1_onearm.xml \
+  --history-endpoint tcp://<controller-host>:5555 \
+  --command-endpoint tcp://<controller-host>:5556 \
+  --request-endpoint tcp://<controller-host>:5557 \
+  --control-endpoint tcp://0.0.0.0:5560
+```
+
+```bash
+tam-eval-wrapper \
+  --reference sine \
+  --history-endpoint tcp://<controller-host>:5555 \
+  --command-endpoint tcp://<controller-host>:5556 \
+  --request-endpoint tcp://<controller-host>:5557
+```
+
+The low-level robot controller bridge is deployment-side infrastructure and is
+not included in this repository.
+
+## Source-To-OSC Sim Evaluation
+
+This representative evaluation warms up on a source joint trajectory, switches
+to operational-space control in simulation, and compares direct OSC against TAM.
+
+```bash
+tam-eval-source-to-osc-sim \
+  --robot-preset panda \
+  --tam-ckpt-path checkpoints/tam/tam_multi_demo \
+  --conditions direct_osc tam_carried \
+  --num-iterations 20 \
+  --sim-backend batched
+```
+
+Outputs are written under `eval_logs/source_to_osc_tam_sim/<timestamp>/`:
+
+- `summary.json`, `summary.csv`, and `summary.md`
+- `summary_aggregate.json`, `summary_aggregate.csv`, and
+  `summary_aggregate.md`
+- per-iteration references and trajectory logs
+
+Use `--conditions tam_all` to include both reset and carried TAM rows.
+
+## Public Scripts
+
+| TAM command | Script |
+| --- | --- |
+| `tam-generate-data` | `scripts/data/generate_dataset.py` |
+| `tam-train-multi-robot` | `scripts/train/tam/train.py` |
+| `tam-train-robot` | `scripts/train/tam/train.py` |
+| `tam-mapping-server` | `scripts/deploy/mapping_server.py` |
+| `tam-eval-wrapper` | `scripts/deploy/trajectory_tracking_eval.py` |
+| `tam-eval-source-to-osc-sim` | `scripts/deploy/source_to_osc_tam_sim.py` |

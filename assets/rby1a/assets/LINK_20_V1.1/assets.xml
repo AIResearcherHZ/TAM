@@ -1,0 +1,4 @@
+<mujoco>
+  <mesh file="assets/LINK_20_V1.1/LINK_20_0.obj"/>
+  <mesh file="assets/LINK_20_V1.1/LINK_20_1.obj"/>
+</mujoco>

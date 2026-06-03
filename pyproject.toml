@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torque-adaptation-module"
+version = "0.1.0"
+description = "Torque Adaptation Module workflows for sim-to-real robot dynamics adaptation"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Dongwon Son" }]
+
+dependencies = [
+    "einops",
+    "flax",
+    "matplotlib",
+    "mujoco",
+    "mujoco-mjx",
+    "numpy",
+    "optax",
+    "scipy",
+    "tqdm",
+    "tyro",
+    "wandb",
+    "zarr",
+]
+
+[project.scripts]
+tam-generate-data = "simadaptor.tam.entrypoints:generate_data"
+tam-train-multi-robot = "simadaptor.tam.entrypoints:train_multi_robot"
+tam-train-robot = "simadaptor.tam.entrypoints:train_robot"
+tam-mapping-server = "simadaptor.tam.entrypoints:mapping_server"
+tam-eval-wrapper = "simadaptor.tam.entrypoints:eval_wrapper"
+tam-eval-source-to-osc-sim = "simadaptor.tam.entrypoints:eval_source_to_osc_sim"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["simadaptor*"]
+exclude = ["tests*", "docs*"]
+
+[project.optional-dependencies]
+cpu = [
+    "jax",
+]
+cuda = [
+    "jax[cuda12]",
+]
+train = [
+    "torch",
+]
+deploy = [
+    "pyzmq",
+]
+dev = [
+    "pytest",
+]
