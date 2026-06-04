@@ -89,6 +89,25 @@ tam-train-robot \
 To continue the same run, reuse `--run-name` and `--ckpt-workdir`; the trainer
 restores the latest checkpoint in that run directory when one exists.
 
+## Public Inference Checkpoint
+
+A sanitized multirobot TAM inference checkpoint is available from the
+[tam-public-multirobot-ckpt3472000 release](https://github.com/Dongwon-Son/TAM/releases/tag/tam-public-multirobot-ckpt3472000).
+
+```bash
+mkdir -p checkpoints/tam
+curl -L \
+  -o /tmp/tam_public_multirobot_ckpt3472000.tar.gz \
+  https://github.com/Dongwon-Son/TAM/releases/download/tam-public-multirobot-ckpt3472000/tam_public_multirobot_ckpt3472000.tar.gz
+tar -xzf /tmp/tam_public_multirobot_ckpt3472000.tar.gz -C checkpoints/tam
+```
+
+Use the extracted directory wherever a TAM checkpoint path is required:
+
+```bash
+--tam-ckpt-path checkpoints/tam/tam_public_multirobot_ckpt3472000
+```
+
 ## Mapping Server And Evaluation Wrapper
 
 See [docs/deployment.md](docs/deployment.md) for endpoint roles and deployment
@@ -123,7 +142,7 @@ to operational-space control in simulation, and compares direct OSC against TAM.
 ```bash
 tam-eval-source-to-osc-sim \
   --robot-preset panda \
-  --tam-ckpt-path checkpoints/tam/tam_multi_demo \
+  --tam-ckpt-path checkpoints/tam/tam_public_multirobot_ckpt3472000 \
   --conditions direct_osc tam_carried \
   --num-iterations 20 \
   --sim-backend batched
