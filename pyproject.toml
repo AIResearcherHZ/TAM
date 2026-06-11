@@ -33,6 +33,8 @@ tam-train-robot = "simadaptor.tam.entrypoints:train_robot"
 tam-mapping-server = "simadaptor.tam.entrypoints:mapping_server"
 tam-eval-wrapper = "simadaptor.tam.entrypoints:eval_wrapper"
 tam-eval-source-to-osc-sim = "simadaptor.tam.entrypoints:eval_source_to_osc_sim"
+tam-replay-sim = "simadaptor.tam.entrypoints:replay_sim"
+tam-report = "simadaptor.tam.entrypoints:sim_report"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

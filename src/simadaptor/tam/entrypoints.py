@@ -241,13 +241,23 @@ def eval_wrapper(argv: Sequence[str] | None = None) -> None:
     _run_script("scripts/deploy/trajectory_tracking_eval.py", list(sys.argv[1:] if argv is None else argv))
 
 
+def replay_sim(argv: Sequence[str] | None = None) -> None:
+    _run_script("scripts/deploy/sim_replay_viewer.py", list(sys.argv[1:] if argv is None else argv))
+
+
+def sim_report(argv: Sequence[str] | None = None) -> None:
+    _run_script("scripts/deploy/sim_report.py", list(sys.argv[1:] if argv is None else argv))
+
+
 def eval_source_to_osc_sim(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Run the representative simulated source-to-OSC TAM evaluation.",
     )
     parser.add_argument("--robot-preset", default="panda")
     parser.add_argument("--conditions", nargs="+", default=["direct_osc", "tam_carried"])
-    parser.add_argument("--sim-backend", default="batched", choices=("auto", "legacy", "batched"))
+    parser.add_argument("--sim-backend", default=None, choices=("auto", "legacy", "batched"))
+    parser.add_argument("--viewer", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--viewer-speed", type=float, default=1.0)
     parser.add_argument("--num-iterations", type=int, default=8)
     parser.add_argument("--outdir", type=Path, default=Path("eval_logs") / "source_to_osc_tam_sim")
     parser.add_argument("--tam-ckpt-path", type=Path, default=None)
@@ -259,6 +269,10 @@ def eval_source_to_osc_sim(argv: Sequence[str] | None = None) -> None:
         help="Quoted extra args forwarded to scripts/deploy/source_to_osc_tam_sim.py.",
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    if args.sim_backend is None:
+        # --viewer needs the per-step legacy simulation; default stays batched otherwise.
+        args.sim_backend = "legacy" if args.viewer else "batched"
 
     forwarded = [
         "--robot-preset",
@@ -272,6 +286,8 @@ def eval_source_to_osc_sim(argv: Sequence[str] | None = None) -> None:
         "--outdir",
         str(args.outdir),
     ]
+    if args.viewer:
+        forwarded.extend(["--viewer", "--viewer-speed", str(args.viewer_speed)])
     if args.tam_ckpt_path is not None:
         forwarded.extend(["--tam-ckpt-path", str(args.tam_ckpt_path)])
     if args.source_only:

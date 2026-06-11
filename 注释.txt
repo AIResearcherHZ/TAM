@@ -1,0 +1,158 @@
+================================================================================
+            TAM 命令手册  (/home/xhz/TAM, Torque Adaptation Module)
+================================================================================
+# 链路: 生成数据 →[多机器人 TAM 训练]→ 单机器人微调 → Sim 评估 → 真机部署(映射服务+评估包装)
+# TAM = 历史条件力矩修正模块, 学 sim 力矩残差, 部署侧在线补偿。全程绝对路径。
+# 计算: JAX(GPU) 训练; PyTorch 仅 CPU 侧 dataloader。在线训练需先生成数据。
+
+
+================================================================================ 安装 (一次性)
+(1) python -m venv /home/xhz/TAM/.venv && source /home/xhz/TAM/.venv/bin/activate
+(2) pip install --upgrade pip
+(3) pip install --index-url https://download.pytorch.org/whl/cpu torch    # 先装 CPU 版 torch
+(4) pip install -U "jax[cuda12]"                                          # GPU 版 jax
+(5) pip install -e "/home/xhz/TAM[train,deploy]"
+    # 纯 CPU 冒烟: pip install -e "/home/xhz/TAM[cpu,train,deploy,dev]"
+    # 在线训练才需: export WANDB_API_KEY=<key>
+
+
+################################################################################
+#  机器人预设 (--robots / --robot / --robot-preset; 别名见括号)
+################################################################################
+#   panda_pandagripper (panda/franka)   Franka Panda + Panda 夹爪
+#   piper_description   (piper)          AgileX Piper
+#   rby1_onearm         (rby1)           RBY-1 单臂
+#   iiwa14              (kuka/iiwa)      KUKA iiwa14
+#   google_robot        (google)         Google Robot 臂
+#   unitree_z1          (unitree/z1)     Unitree Z1
+#   flexiv_rizon4       (flexiv/rizon4)  Flexiv Rizon4
+# XML 在 /home/xhz/TAM/assets/<robot>/<robot>.xml
+
+
+──── 步骤1  生成 TAM 数据集 (每机器人一个子目录)
+# 输出每机器人含 Zarr 分片 + manifest.json + data_generation_config.json
+(1) tam-generate-data \
+      --robots panda_pandagripper piper_description rby1_onearm \
+      --dataset-base-path /home/xhz/TAM/datasets/tam \
+      --num-steps 4000 \
+      --history-batch 128
+# 校验: python /home/xhz/TAM/scripts/data/verify_dataset.py
+
+
+──── 步骤2  训练多机器人 TAM
+# checkpoint 写到 <ckpt-workdir>/<run-name>/
+(1) tam-train-multi-robot \
+      --dataset-base-path /home/xhz/TAM/datasets/tam \
+      --robots panda_pandagripper piper_description rby1_onearm \
+      --run-name tam_multi_demo \
+      --ckpt-workdir /home/xhz/TAM/checkpoints/tam \
+      --wandb-mode disabled \
+      --max-steps 200000
+# --wandb-mode online|offline|disabled (online 需 --wandb-project 和 WANDB_API_KEY)
+
+
+──── 步骤3  单机器人训练 / 微调
+# 续训: 复用同一 --run-name 与 --ckpt-workdir, 自动恢复该目录最新 ckpt
+(1) tam-train-robot \
+      --robot rby1_onearm \
+      --dataset-base-path /home/xhz/TAM/datasets/tam \
+      --run-name tam_rby1 \
+      --ckpt-workdir /home/xhz/TAM/checkpoints/tam \
+      --wandb-mode disabled \
+      --max-steps 200000
+
+
+──── 步骤4  公开推理 checkpoint (可跳过训练直接评估)
+(1) mkdir -p /home/xhz/TAM/checkpoints/tam
+(2) curl -L -o /tmp/tam_pub.tar.gz \
+      https://github.com/Dongwon-Son/TAM/releases/download/tam-public-multirobot-ckpt3472000/tam_public_multirobot_ckpt3472000.tar.gz
+(3) tar -xzf /tmp/tam_pub.tar.gz -C /home/xhz/TAM/checkpoints/tam
+# 用法: 任何需 ckpt 处填
+#   --tam-ckpt-path /home/xhz/TAM/checkpoints/tam/tam_public_multirobot_ckpt3472000
+
+
+──── 步骤5  Sim 评估 (source → OSC, 代表性仿真对比)
+# 先沿源关节轨迹热身, 再切换到操作空间控制(OSC), 对比 直接OSC vs TAM
+(1) tam-eval-source-to-osc-sim \
+      --robot-preset panda \
+      --tam-ckpt-path /home/xhz/TAM/checkpoints/tam/tam_public_multirobot_ckpt3472000 \
+      --conditions direct_osc tam_carried \
+      --num-iterations 20 \
+      --sim-backend batched
+# 输出: /home/xhz/TAM/eval_logs/source_to_osc_tam_sim/<时间戳>/
+#   summary.{json,csv,md} / summary_aggregate.{json,csv,md} / 逐次参考与轨迹日志
+
+
+──── 步骤6  MuJoCo 可视化 (方式A 实时观看 / 方式B 事后回放)
+# 评估本身是 headless 的, 不会弹窗; 想看见机器人动有两种方式:
+
+# 方式A  实时观看: 加 --viewer, 仿真过程中直接开 MuJoCo 窗口 (自动切 legacy 后端)
+# 每个 condition 依次弹一个窗口 (ideal_model → direct_osc → tam_carried);
+# 默认不超实时(24s/条), --viewer-speed 4 = 最快 4 倍速; 关窗口不影响评估继续
+(1) tam-eval-source-to-osc-sim \
+      --robot-preset panda \
+      --tam-ckpt-path /home/xhz/TAM/checkpoints/tam/tam_public_multirobot_ckpt3472000 \
+      --conditions direct_osc tam_carried \
+      --num-iterations 2 \
+      --viewer --viewer-speed 4
+
+# 方式B  事后回放: 三臂并排同一场景同步对比 (需 legacy 后端产生的 npz 轨迹,
+#   方式A 的 run 可直接回放; 纯回放数据也可用 --sim-backend legacy 不加 --viewer 生成)
+(2) tam-replay-sim                       # 开 MuJoCo 交互窗口, 自动选最新含轨迹的 run
+# 场景: 三臂并排, 底环颜色 蓝=ideal_model(理想参数) 红=direct_osc 绿=tam_carried;
+#   灰虚线=OSC 期望末端路径, 金球=终点, 彩色轨迹=各自实际末端轨迹
+# 快捷键: 空格 暂停/继续 | ←/→ 快退/快进2s | ↑/↓ 变速 | R 重播 | L 循环; 鼠标转/移/缩视角
+# 常用:
+#   tam-replay-sim --list                                  # 列出可回放 run/iteration/condition
+#   tam-replay-sim --iter 1 --rate 2.0                     # 选 iteration, 2 倍速
+#   tam-replay-sim --conditions direct_osc tam_carried     # 不显示 ideal_model
+#   tam-replay-sim --run-dir /home/xhz/TAM/eval_logs/source_to_osc_tam_sim/<时间戳>
+#   tam-replay-sim --save-video out.mp4 --fps 30           # 无窗口离线渲染 mp4 (headless 可用)
+
+
+──── 步骤7  评估报告 (自动回答 "TAM 好不好, 好多少")
+# 实验逻辑: 被控机器人动力学被随机扰动(模拟真机与标称模型失配), ideal_model=理想上限,
+#   direct_osc=不补偿下限; 模型效果 = tam_carried 离上限有多近, 指标越小越好
+(1) tam-report                           # 默认分析 eval_logs/source_to_osc_tam_sim 最新 run
+#   tam-report <run目录>                 # 指定 run
+# 输出: 终端直接给结论 (TAM 明显有效/有效/不明显/变差 + 胜率 + 误差降幅),
+#   并在 run 目录写 report.md + report_paired.png (逐轮配对柱状图);
+#   legacy 后端的 run 额外出 report_timeline.png (偏离理想随时间, 能看出 TAM 在哪段起作用)
+#   和 report_ee_path3d.png (末端 3D 轨迹叠加)
+# 判读: 看 "TAM 胜率" 和 "误差中位数变化" 两列; 轮数 >= 5 结论才稳 (batched 跑 20 轮很快)
+# 推荐组合: batched 20轮 → tam-report 看结论; legacy 2轮 → tam-report 出全套图 + 步骤6 看动作
+
+
+################################################################################
+#  真机部署 (工作站侧映射服务 + 外部评估包装; 底层控制器桥不在本仓库)
+################################################################################
+# 端点 (前三个填控制器主机地址, --control-endpoint 在工作站 bind):
+#   --history-endpoint 5555  控制器 PUB→服务 SUB  历史窗口/reset/关节态/力矩
+#   --command-endpoint 5556  服务 PUSH→控制器 PULL 目标指令/TAM 嵌入/前馈
+#   --request-endpoint 5557  服务 REQ→控制器 REP   可靠请求(加载权重/启停 TAM)
+#   --control-endpoint 5560  操作/评估 REQ→服务 REP  reset/hold/resume/status
+
+──── 步骤1  启动映射服务 (工作站)
+(1) tam-mapping-server \
+      --ckpt-path /home/xhz/TAM/checkpoints/tam/tam_rby1 \
+      --xml /home/xhz/TAM/assets/rby1a/rby1_onearm.xml \
+      --history-endpoint tcp://<控制器主机>:5555 \
+      --command-endpoint tcp://<控制器主机>:5556 \
+      --request-endpoint tcp://<控制器主机>:5557 \
+      --control-endpoint tcp://0.0.0.0:5560 \
+      --require-control-enable
+# --require-control-enable: 收到控制指令前 TAM 保持禁用(推荐默认, 防机器人未归位前
+#   被陈旧历史误启用)。--send-bin 启用时上传导出的 TAM 权重 blob。
+
+──── 步骤2  启动评估包装 (跟踪轨迹)
+(1) tam-eval-wrapper \
+      --reference sine \
+      --history-endpoint tcp://<控制器主机>:5555 \
+      --command-endpoint tcp://<控制器主机>:5556 \
+      --request-endpoint tcp://<控制器主机>:5557
+# 评估 TAM 控制时映射服务需常驻; 仅做直控对比时可不开映射服务。
+
+──── 启停顺序
+# 1 控制器桥(机器人侧)  2 映射服务(工作站, 配对 ckpt 与 XML)
+# 3 确认服务报告 历史新鲜 + TAM 运行时就绪  4 经控制端点 reset/resume 或起评估包装
+# 5 先停评估包装, 再停映射服务/控制器桥

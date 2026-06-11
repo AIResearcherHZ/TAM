@@ -8,6 +8,7 @@ import inspect
 import json
 import os
 import sys
+import time
 import types
 from pathlib import Path
 from typing import Any, Optional, Sequence
@@ -2550,6 +2551,66 @@ def _make_models(
     return plant_model, plant_data, controller_model, controller_data
 
 
+class _LiveSimViewer:
+    """Real-time MuJoCo window for the legacy backend (--viewer).
+
+    Throttles ``sync`` to ~60 fps and paces the simulation so it never runs
+    faster than ``speed``x wall clock. If the user closes the window the
+    simulation simply continues headless.
+    """
+
+    def __init__(self, model: mujoco.MjModel, data: mujoco.MjData, label: str, speed: float) -> None:
+        import mujoco.viewer
+
+        self._handle = mujoco.viewer.launch_passive(model, data)
+        self._speed = max(float(speed), 1e-3)
+        self._sync_every = max(int(round(1.0 / 60.0 / max(float(model.opt.timestep), 1e-6))), 1)
+        self._step_count = 0
+        self._wall_start: Optional[float] = None
+        self._sim_start = 0.0
+        cam = self._handle.cam
+        cam.lookat[:] = [0.3, 0.0, 0.45]
+        cam.distance = 2.2
+        cam.azimuth = 140.0
+        cam.elevation = -20.0
+        scn = self._handle.user_scn
+        if scn.maxgeom > 0:
+            geom = scn.geoms[0]
+            mujoco.mjv_initGeom(
+                geom,
+                mujoco.mjtGeom.mjGEOM_SPHERE,
+                np.array([0.012, 0.0, 0.0]),
+                np.array([0.0, 0.0, 1.05]),
+                np.eye(3).reshape(9),
+                np.array([0.95, 0.8, 0.15, 1.0], dtype=np.float32),
+            )
+            try:
+                geom.label = str(label)
+            except (AttributeError, TypeError, ValueError):
+                pass
+            scn.ngeom = 1
+
+    def tick(self, sim_t: float) -> None:
+        if not self._handle.is_running():
+            return
+        if self._wall_start is None:
+            self._wall_start = time.perf_counter()
+            self._sim_start = float(sim_t)
+        self._step_count += 1
+        if self._step_count % self._sync_every:
+            return
+        ahead = (float(sim_t) - self._sim_start) / self._speed - (time.perf_counter() - self._wall_start)
+        if ahead > 0.0:
+            time.sleep(min(ahead, 0.1))
+        self._handle.sync()
+
+    def close(self) -> None:
+        try:
+            self._handle.close()
+        except Exception:
+            pass
+
+
 def _simulate_condition(
     *,
     args: argparse.Namespace,
@@ -2586,6 +2647,13 @@ def _simulate_condition(
     if site_id < 0:
         raise ValueError(f"Site not found in XML: {args.fk_site}")
     _set_arm_state(plant_model, plant_data, qpos_idx, qvel_idx, initial_q, np.zeros(dof))
+    live_viewer: Optional[_LiveSimViewer] = None
+    if bool(getattr(args, "viewer", False)):
+        viewer_label = str(condition_dir_name or getattr(spec, "label", "") or spec.key)
+        print(f"[viewer] {viewer_label}: 打开实时窗口 (关闭窗口不影响仿真继续)", flush=True)
+        live_viewer = _LiveSimViewer(
+            plant_model, plant_data, viewer_label, float(getattr(args, "viewer_speed", 1.0))
+        )
     controller_joint_range = _as_np_field(getattr(rollout_params, "joint_range", None))
     controller_guard_enabled = bool(getattr(args, "controller_side_guard", True))
     controller_guard_velocity_threshold = float(
@@ -2688,6 +2756,8 @@ def _simulate_condition(
         )
         if step_idx < len(source_t) - 1:
             mujoco.mj_step(plant_model, plant_data)
+        if live_viewer is not None:
+            live_viewer.tick(float(t_now))
 
     flush_chunk(active_source_tam)
 
@@ -2770,8 +2840,13 @@ def _simulate_condition(
             )
             if step_idx < len(target_t) - 1:
                 mujoco.mj_step(plant_model, plant_data)
+            if live_viewer is not None:
+                live_viewer.tick(t_now)
 
         flush_chunk(active_target_tam)
+
+    if live_viewer is not None:
+        live_viewer.close()
 
     condition_dir = run_dir / (str(condition_dir_name) if condition_dir_name is not None else spec.key)
     condition_dir.mkdir(parents=True, exist_ok=True)
@@ -2906,6 +2981,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Chunk size for --sim-backend batched. 0 runs all iterations in one vectorized batch.",
     )
     parser.add_argument(
+        "--viewer",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Open a real-time MuJoCo window while simulating (legacy backend only).",
+    )
+    parser.add_argument(
+        "--viewer-speed",
+        type=float,
+        default=1.0,
+        help="Real-time pacing cap for --viewer (1.0 = at most real time).",
+    )
+    parser.add_argument(
         "--iteration-offset",
         type=int,
         default=0,
@@ -3025,6 +3112,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def run(args: argparse.Namespace) -> Path:
     conditions = resolve_sim_conditions(args.conditions)
     dof = _resolve_robot_args(args)
+    if bool(getattr(args, "viewer", False)):
+        requested_backend = str(getattr(args, "sim_backend", "auto") or "auto").lower()
+        if requested_backend == "batched":
+            raise SystemExit(
+                "--viewer only works with the legacy backend; rerun with --sim-backend legacy."
+            )
+        if requested_backend == "auto":
+            args.sim_backend = "legacy"
+            print("[viewer] --viewer requested; forcing --sim-backend legacy.", flush=True)
+        # The module defaults MUJOCO_GL to egl for headless runs, but the
+        # interactive GLFW window crashes on teardown under an EGL context.
+        os.environ["MUJOCO_GL"] = "glfw"
     sim_backend = _sim_backend_choice(args, conditions)
     setattr(args, "sim_backend_resolved", sim_backend)
     run_dir = args.outdir.expanduser().resolve() / dt.datetime.now().strftime("%Y%m%d_%H%M%S")
